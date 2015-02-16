@@ -1,15 +1,18 @@
 #include "TinyWireS.h"
 
 /*
-  i2cset -y 0 0x25 0x00; sleep 1; i2cget -y 0 0x25 0x00; i2cget -y 0 0x25 0x00; i2cget -y 0 0x25 0x00; i2cget -y 0 0x25 0x00
+  ATtiny85 I2C Firmware for Sharp gp2y1010 Dust Sensor
 
-  0x00
-  0xc0
-  0x3c
-  0x40
+  (C) Ricardo Carrasco Cursach - 2014
 
-  0x403cc000
-  2.9492188 <--- IEEE 754 Float http://www.h-schmidt.net/FloatConverter/IEEE754.html
+
+  This firmware returns a IEEE-754 compilant float value corresponding to the analog reading of
+  the Sharp PG2Y1010 Dust Sensor.
+  
+  It must receive a Ox00 byte as command to start reading, it will return 4 bytes after at least
+  more than 900 msec in little-endian order.
+  
+  The result is the average of at least 88 Samples taken in 900 msecs
   
                      ----
   RST             --|°   |--    VIN
@@ -18,30 +21,47 @@
   GND             --|    |--    SDA
                      ----
   
+  Based on works by:  
+  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+  * Sharp sensor reading based on examples by Chris Nafis (C) 2012
+    http://www.howmuchsnow.com/arduino/airquality/
+
+  * USIi2c Library "TinyWireS" based on a Don Blake's post at AVR freaks. 2011 BroHogan - brohoganx10 at gmail dot com
+  
+  * arduino-tiny core Libraries
+    https://code.google.com/p/arduino-tiny/
+  - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - - 
+  
 */
 
 
-#define I2C_SLAVE_ADDR  0x25 // i2c slave address
+#define I2C_SLAVE_ADDR  0x25  // i2c slave address
 
-#define DUST_READ       A3  // Dust read on pin 2 (ADC3)
-#define DUST_LED         4  // Dust LED control on pin 3 (PB4)
+#define DUST_OUT       A3     // Dust sensor output on pin 2 (ADC3)
+#define DUST_LED        4     // Dust LED control on pin 3 (PB4)
+#define LED_PIN         1     // Led Indicator
 
-#define DELAY_TIME1     28  // Wait 28 us before read sensor value (cf : datasheet)
-#define DELAY_TIME2     10  // Wait 10 ms before reread sensor value (cf : datasheet)
-
-#define SAMPLES         40  // How many samples to take
-
-#define LED_PIN         1
-
-int readings[SAMPLES];
+#define M_SECS          900   // Time to be consumed on reading sensor
+                              // (1000 mSec ~ 99 Samples with Arduino UNO @16 MHz)
 
 void setup(){
   pinMode(DUST_LED,OUTPUT);
-  pinMode(DUST_READ,INPUT);
+  pinMode(DUST_OUT,INPUT);
   pinMode(LED_PIN, OUTPUT);
   digitalWrite(LED_PIN, LOW);
   TinyWireS.begin(I2C_SLAVE_ADDR);      // init I2C Slave mode
 }
+
+/*
+  void loop()
+  
+  Checks if an I2C command is received.
+  
+  On command 0x00 will call getReading for M_SECS time
+  and then send the obtained value as a little-endian
+  single presicion float number representing Volts taken
+  from the analog input through the I2C Bus with 4 Bytes.
+*/
 
 void loop(){
   if (TinyWireS.available()){
@@ -53,57 +73,14 @@ void loop(){
         digitalWrite(LED_PIN, HIGH);
         // -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
         
-        // Take [SAMPLE] Times samples and push them to array
-        for(int i=0; i<SAMPLES; i++){
-          digitalWrite(DUST_LED,LOW);     //++
-          delayMicroseconds(DELAY_TIME1); //++
-          readings[i] = analogRead(DUST_READ);
-          digitalWrite(DUST_LED,HIGH);    //++
-          delay(DELAY_TIME2);             //++
-        }
-
-
-        //------------------------------------//        
-        //Cutting edges -10 ... 10+ over 40
-        boolean clean = true;        
-        for(int i=0; i<SAMPLES-1; i++){
-          clean = true;
-          for(int j=1; j<SAMPLES; j++){
-            if(readings[i] > readings[j]){
-              int aux = readings[j];
-              readings[j] = readings[i];
-              readings[i] = aux;
-              clean = false;
-            }
-          }
-          if(clean){ break; }
-        }
-
-        float r = 0.0;
-        for(int i=10; i<SAMPLES-10; i++){
-          r += readings[i];
-        }
-        r = r / (SAMPLES-20);
+        // Reading Value in Volts
+        float f = getReading(M_SECS);
         
-        //------------------------------------//
-        
-        // Obtaining Arithmetic Media on variable r
-        /*
-        float r = 0.0;
-        for(int i=0; i<SAMPLES; i++){
-          r += readings[i];
-        }
-        r = r / SAMPLES;
-        */
-        
-        // Value to Volts
-        float f = 0.00000000;
-        f = (r * 5.0)/1024.0;
         // Sending float as bytes
-        TinyWireS.send( *((uint8_t *)&f + 3) );
-        TinyWireS.send( *((uint8_t *)&f + 2) );
+        TinyWireS.send( *((uint8_t *)&f ) );
         TinyWireS.send( *((uint8_t *)&f + 1) );
-        TinyWireS.send( *((uint8_t *)&f)  );
+        TinyWireS.send( *((uint8_t *)&f + 2) );
+        TinyWireS.send( *((uint8_t *)&f + 3)  );
         
         // -.-.-.-.-.-.-.-.-.-.-.-.-.-.-.-.
         digitalWrite(LED_PIN, LOW);
@@ -112,5 +89,46 @@ void loop(){
       break;
     }
   }
+}
+
+
+/*
+  float getReading(int msec)
+  
+  Return the value in volts of all the samples taken in the given milliseconds
+  1000 msec gives arround 99 samples on arduino UNO @ 16 MHz
+  
+*/
+float getReading(int msec){
+
+  int delayTime=280;
+  int delayTime2=40;
+  int offTime=9680;
+  
+  boolean keep_reading = true;
+  int i = 0;
+  long startTime = millis(); 
+  long data = 0;
+ 
+  // Keep reading until time is out
+  while(keep_reading){
+    
+    i=i+1; // Count Samples
+    
+    digitalWrite(DUST_LED,LOW); // power on the LED
+    delayMicroseconds(delayTime);
+    
+    data += analogRead(DUST_OUT); // read the dust value
+    
+    delayMicroseconds(delayTime2);
+    digitalWrite(DUST_LED,HIGH); // turn the LED off
+    delayMicroseconds(offTime);
+
+    if((millis() - startTime > msec)) { keep_reading = false; }
+  }
+
+  // Divide the sum of values by the number of samples (average)
+  // Then convert the given value to volts and returns.
+  return ( (float)(data/i) * 5.0 ) / 1024.0;
 }
 
