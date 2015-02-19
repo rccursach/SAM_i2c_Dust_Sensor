@@ -95,6 +95,6 @@ If you found errors while compiling make shure:
 If there are errors uploading the firmware check if you:
 
 * Choose the right programmer model on the list.
-* Burned the bootloader (do it again if not shure).
+* Burned the bootloader (do it again if not sure).
 * have loose/wrong connections between the IC and the AVR programmer.
 
